@@ -1,0 +1,34 @@
+[package]
+name = "rstrace"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rstrace-common = { path = "../rstrace-common", features = ["user"] }
+
+anyhow = { workspace = true, default-features = true }
+aya = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+env_logger = { workspace = true }
+libc = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt",
+    "rt-multi-thread",
+    "signal",
+    "time",
+] }
+
+[build-dependencies]
+anyhow = { workspace = true }
+aya-build = { workspace = true }
+cargo_metadata = { workspace = true }
+rstrace-ebpf = { path = "../rstrace-ebpf" }
+
+[[bin]]
+name = "rstrace"
+path = "src/main.rs"
