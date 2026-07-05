@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+mod dstlog;
 mod helpers;
 mod netbw;
 mod syscall;

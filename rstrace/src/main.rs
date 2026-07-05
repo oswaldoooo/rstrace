@@ -1,4 +1,5 @@
 mod compute_effective;
+mod dstlog;
 mod netbw_collect;
 mod syscall_collect;
 mod syscall_names;
@@ -23,6 +24,9 @@ enum Commands {
     /// Measure CPU compute efficiency with a fixed pure-compute workload.
     #[command(name = "compute_effective")]
     ComputeEffective(ComputeEffectiveArgs),
+    /// Log outbound TCP/UDP destination IPs for a given process comm.
+    #[command(name = "dstlog")]
+    DstLog(DstLogArgs),
 }
 
 #[derive(Parser)]
@@ -90,6 +94,25 @@ pub struct ComputeEffectiveArgs {
     json: bool,
 }
 
+#[derive(Parser)]
+pub struct DstLogArgs {
+    /// Interval in seconds between map rotation and draining the inactive buffer.
+    #[arg(long, default_value_t = 1)]
+    duration: u64,
+
+    /// Process comm to monitor (required).
+    #[arg(long)]
+    comm: String,
+
+    /// Capture TCP outbound destinations (kprobe: tcp_connect).
+    #[arg(short = 't')]
+    tcp: bool,
+
+    /// Capture UDP outbound destinations (kprobe: udp_sendmsg).
+    #[arg(short = 'u')]
+    udp: bool,
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 pub enum NetBwSortKey {
     Tcp,
@@ -103,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::SyscallCollect(a) => a.json,
         Commands::NetBwCollect(a) => a.json,
         Commands::ComputeEffective(a) => a.json,
+        Commands::DstLog(_) => false,
     };
     util::init_logging(json);
 
@@ -110,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::SyscallCollect(args) => syscall_collect::run(args).await?,
         Commands::NetBwCollect(args) => netbw_collect::run(args).await?,
         Commands::ComputeEffective(args) => compute_effective::run(args)?,
+        Commands::DstLog(args) => dstlog::run(args).await?,
     }
 
     Ok(())
