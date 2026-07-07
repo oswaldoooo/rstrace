@@ -4,7 +4,6 @@ use anyhow::Context as _;
 use aya::{
     maps::{Array, HashMap},
     programs::RawTracePoint,
-    Ebpf,
 };
 use serde::Serialize;
 use tokio::signal;
@@ -14,10 +13,7 @@ use crate::util::build_comm_filter;
 use super::syscall_names;
 
 pub async fn run(args: super::SyscallCollectArgs) -> anyhow::Result<()> {
-    let mut ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
-        env!("OUT_DIR"),
-        "/rstrace"
-    )))?;
+    let mut ebpf = crate::util::load_ebpf()?;
 
     let program: &mut RawTracePoint = ebpf
         .program_mut("syscall_collect")

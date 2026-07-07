@@ -15,3 +15,7 @@ which = { workspace = true }
 [[bin]]
 name = "rstrace"
 path = "src/main.rs"
+
+[[bin]]
+name = "rstrace-xdp"
+path = "src/main_xdp.rs"

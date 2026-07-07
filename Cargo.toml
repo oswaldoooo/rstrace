@@ -27,6 +27,9 @@ log = { version = "0.4.22", default-features = false }
 serde = { version = "1.0.228", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0.150", default-features = false, features = ["std"] }
 tokio = { version = "1.40.0", default-features = false }
+pnet = { version = "0.35.0", default-features = false, features = ["std"] }
+chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["std"] }
+hex = { version = "0.4.3", default-features = false, features = ["std"] }
 which = { version = "6.0.0", default-features = false }
 
 [profile.release.package.rstrace-ebpf]

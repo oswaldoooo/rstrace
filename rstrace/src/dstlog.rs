@@ -5,7 +5,6 @@ use anyhow::{bail, Context as _};
 use aya::{
     maps::{Array, HashMap},
     programs::KProbe,
-    Ebpf,
 };
 use rstrace_common::{CommFilter, DstKey, DstLogConfig};
 use tokio::signal;
@@ -13,14 +12,19 @@ use tokio::signal;
 use crate::util::build_comm_filter;
 
 pub async fn run(args: super::DstLogArgs) -> anyhow::Result<()> {
+    let bl = if let Some(blpath) = args.blacklist {
+        let mut bl = crate::ip_blacklist::Blacklist::new();
+        bl.load_file(&std::path::PathBuf::new().join(blpath))
+            .context("load blacklist failed")?;
+        Some(bl)
+    } else {
+        None
+    };
     if !args.tcp && !args.udp {
         bail!("at least one of -t (TCP) or -u (UDP) must be specified");
     }
 
-    let mut ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
-        env!("OUT_DIR"),
-        "/rstrace"
-    )))?;
+    let mut ebpf = crate::util::load_ebpf()?;
 
     if args.tcp {
         let program: &mut KProbe = ebpf
@@ -83,7 +87,7 @@ pub async fn run(args: super::DstLogArgs) -> anyhow::Result<()> {
                 }
 
                 let map_name = if drain_buf == 0 { "DST_MAP_A" } else { "DST_MAP_B" };
-                drain_and_print(ebpf.map_mut(map_name).unwrap())?;
+                drain_and_print(ebpf.map_mut(map_name).unwrap(),&bl)?;
             }
             res = signal::ctrl_c() => {
                 res?;
@@ -95,7 +99,10 @@ pub async fn run(args: super::DstLogArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn drain_and_print(map: &mut aya::maps::Map) -> anyhow::Result<()> {
+fn drain_and_print(
+    map: &mut aya::maps::Map,
+    bl: &Option<crate::ip_blacklist::Blacklist>,
+) -> anyhow::Result<()> {
     let mut hash = HashMap::<_, DstKey, u64>::try_from(map)?;
     let entries: Vec<(DstKey, u64)> = hash
         .iter()
@@ -109,7 +116,12 @@ fn drain_and_print(map: &mut aya::maps::Map) -> anyhow::Result<()> {
 
     for (key, count) in &entries {
         if let Some(ip) = format_dst_key(key) {
-            println!("{ip} {ts} {count}");
+            if bl.as_ref().map_or(true, |v| match ip.parse() {
+                Ok(addr) => v.is_hit(addr),
+                Err(_) => true,
+            }) {
+                println!("{ip} {ts} {count}");
+            }
         }
     }
 

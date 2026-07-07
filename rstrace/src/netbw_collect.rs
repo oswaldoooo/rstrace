@@ -7,7 +7,6 @@ use anyhow::{bail, Context as _};
 use aya::{
     maps::{Array, HashMap},
     programs::KProbe,
-    Ebpf,
 };
 use serde::Serialize;
 use tokio::signal;
@@ -31,10 +30,7 @@ pub async fn run(args: super::NetBwCollectArgs) -> anyhow::Result<()> {
         }
     }
 
-    let mut ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
-        env!("OUT_DIR"),
-        "/rstrace"
-    )))?;
+    let mut ebpf = crate::util::load_ebpf()?;
 
     if args.tcp {
         let program: &mut KProbe = ebpf

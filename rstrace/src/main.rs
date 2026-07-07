@@ -1,10 +1,12 @@
 mod compute_effective;
+mod dns_capture;
 mod dstlog;
+mod ip_blacklist;
+mod ip_blacklist_test;
 mod netbw_collect;
 mod syscall_collect;
 mod syscall_names;
 mod util;
-
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
@@ -27,6 +29,17 @@ enum Commands {
     /// Log outbound TCP/UDP destination IPs for a given process comm.
     #[command(name = "dstlog")]
     DstLog(DstLogArgs),
+    /// Capture DNS queries (UDP dst port 53) via pnet. Output: domain qtype timestamp.
+    #[command(name = "dns_capture")]
+    DnsCapture(DnsCaptureArgs),
+    /// Drop IPv4 traffic matching blacklist CIDR ranges via XDP.
+    #[command(name = "ip-blacklist")]
+    IpBlacklist(IpBlacklistArgs),
+    /// Detach the XDP blacklist program from a network interface.
+    #[command(name = "ip-blacklist-detach")]
+    IpBlacklistDetach(IpBlacklistDetachArgs),
+    #[command(name = "ip-blacklist-test")]
+    IpBlacklistTest(IpBlacklistTestArgs),
 }
 
 #[derive(Parser)]
@@ -111,6 +124,77 @@ pub struct DstLogArgs {
     /// Capture UDP outbound destinations (kprobe: udp_sendmsg).
     #[arg(short = 'u')]
     udp: bool,
+    #[arg(long)]
+    blacklist: Option<String>,
+}
+
+#[derive(Parser)]
+pub struct DnsCaptureArgs {
+    /// Interval in seconds between printing aggregated DNS records.
+    #[arg(long, default_value_t = 1)]
+    duration: u64,
+
+    /// Network interface to sniff (default: all active interfaces including lo).
+    #[arg(long, short = 'i')]
+    interface: Option<String>,
+}
+
+#[derive(Parser)]
+pub struct IpBlacklistArgs {
+    /// Network interface to attach the XDP program.
+    #[arg(long, short = 'd')]
+    interface: String,
+    #[arg(long, short = 'i')]
+    input: Option<std::path::PathBuf>,
+
+    /// Add a CIDR range before attaching (may repeat).
+    #[arg(long)]
+    add: Vec<String>,
+
+    /// Remove a CIDR range before attaching (may repeat).
+    #[arg(long)]
+    delete: Vec<String>,
+
+    /// Interval in seconds between writing hit stats to -o (default: 60).
+    #[arg(long, default_value_t = 60)]
+    duration: u64,
+
+    /// Overwrite this file with per-range drop counts each interval (only ranges with hits).
+    #[arg(short = 'o')]
+    output: Option<std::path::PathBuf>,
+
+    /// Do not drop packets; print matched blacklist IPs to stdout (dstlog-style).
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Drop TCP packets when src/dst matches the blacklist.
+    #[arg(short = 't')]
+    tcp: bool,
+
+    /// Drop UDP packets when src/dst matches the blacklist.
+    #[arg(short = 'u')]
+    udp: bool,
+}
+
+#[derive(Parser)]
+pub struct IpBlacklistDetachArgs {
+    /// Network interface to detach the XDP program from.
+    #[arg(long, short = 'd')]
+    interface: String,
+}
+
+#[derive(Parser)]
+pub struct IpBlacklistTestArgs {
+    #[arg(long, short = 'f')]
+    file: std::path::PathBuf,
+    ///test ip list
+    targets: Option<Vec<String>>,
+    ///json model output
+    #[arg(long)]
+    json: bool,
+    ///stream model,input by stdin
+    #[arg(long)]
+    stream: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -127,6 +211,10 @@ async fn main() -> anyhow::Result<()> {
         Commands::NetBwCollect(a) => a.json,
         Commands::ComputeEffective(a) => a.json,
         Commands::DstLog(_) => false,
+        Commands::DnsCapture(_) => false,
+        Commands::IpBlacklist(_) => false,
+        Commands::IpBlacklistDetach(_) => false,
+        Commands::IpBlacklistTest(a) => a.json,
     };
     util::init_logging(json);
 
@@ -135,6 +223,13 @@ async fn main() -> anyhow::Result<()> {
         Commands::NetBwCollect(args) => netbw_collect::run(args).await?,
         Commands::ComputeEffective(args) => compute_effective::run(args)?,
         Commands::DstLog(args) => dstlog::run(args).await?,
+        Commands::DnsCapture(args) => dns_capture::run(args).await?,
+        Commands::IpBlacklist(args) => ip_blacklist::run(args).await?,
+        Commands::IpBlacklistDetach(args) => {
+            ip_blacklist::detach_xdp(&args.interface)?;
+            println!("XDP detached from {}", args.interface);
+        }
+        Commands::IpBlacklistTest(args) => ip_blacklist_test::run(args)?,
     }
 
     Ok(())
