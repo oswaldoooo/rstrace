@@ -141,3 +141,7 @@ pub fn syscall_name(id: u32) -> &'static str {
         _ => "unknown",
     }
 }
+
+pub fn syscall_id(name: &str) -> Option<u32> {
+    (0..512).find(|&id| syscall_name(id) == name)
+}

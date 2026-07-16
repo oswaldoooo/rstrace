@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use aya::{
-    maps::{Array, HashMap, LpmTrie, lpm_trie::Key},
+    maps::{lpm_trie::Key, Array, HashMap, LpmTrie},
     programs::{Xdp, XdpMode},
 };
 use rstrace_common::{IpBlacklistConfig, Ipv4Range, MAX_BLACKLIST_RANGES};
@@ -14,9 +14,10 @@ use tokio::signal;
 
 pub async fn run(args: super::IpBlacklistArgs) -> anyhow::Result<()> {
     let mut ranges = Blacklist::new();
-    if let Some(path) = &args.input {
-        ranges.load_file(path)?;
-    }
+    let input = args
+        .input
+        .unwrap_or(std::path::PathBuf::new().join("/etc/.ip_blacklist"));
+    ranges.load_file(&input)?;
     for cidr in &args.add {
         ranges.add_cidr(cidr)?;
     }
@@ -48,11 +49,7 @@ pub async fn run(args: super::IpBlacklistArgs) -> anyhow::Result<()> {
         args.interface,
         ranges.len(),
         protocol_label(args.tcp, args.udp),
-        if args.dry_run {
-            " [dry-run]"
-        } else {
-            ""
-        }
+        if args.dry_run { " [dry-run]" } else { "" }
     );
 
     if args.dry_run {
@@ -60,12 +57,13 @@ pub async fn run(args: super::IpBlacklistArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if args.output.is_none() {
+    if args.output.is_none() && args.stun_output.is_none() {
         signal::ctrl_c().await?;
         return Ok(());
     }
 
-    let output = args.output.clone().unwrap();
+    let output = args.output.clone();
+    let stun_output = args.stun_output.clone();
     let interval = Duration::from_secs(args.duration);
     let mut tick = tokio::time::interval(interval);
     tick.tick().await;
@@ -73,7 +71,12 @@ pub async fn run(args: super::IpBlacklistArgs) -> anyhow::Result<()> {
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                ranges.dump_hits(&mut ebpf, &output)?;
+                if let Some(path) = &output {
+                    ranges.dump_hits(&mut ebpf, path)?;
+                }
+                if let Some(path) = &stun_output {
+                    dump_stun_passes(&mut ebpf, path)?;
+                }
             }
             res = signal::ctrl_c() => {
                 res?;
@@ -160,6 +163,76 @@ fn format_ip_key(ip: u32) -> Option<String> {
     Some(Ipv4Addr::from(ip.to_be_bytes()).to_string())
 }
 
+fn dump_stun_passes(ebpf: &mut aya::Ebpf, output: &Path) -> anyhow::Result<()> {
+    let mut counts: HashMap<_, u32, u64> =
+        HashMap::try_from(ebpf.map_mut("STUN_PASS_COUNTS").unwrap())?;
+
+    let mut entries: Vec<(String, u64)> = counts
+        .iter()
+        .filter_map(|item| {
+            item.ok()
+                .and_then(|(ip, count)| format_ip_key(ip).map(|text| (text, count)))
+        })
+        .collect();
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    let body = if entries.is_empty() {
+        String::new()
+    } else {
+        let mut lines = Vec::with_capacity(entries.len());
+        for (ip, count) in entries {
+            lines.push(format!("{ip} {count}"));
+        }
+        format!("{}\n", lines.join("\n"))
+    };
+    fs::write(output, body).with_context(|| format!("write {}", output.display()))?;
+    Ok(())
+}
+
+/// RFC 5389 / RFC 3489 STUN Binding message heuristic (mirrors eBPF checks).
+pub fn is_stun_binding_message(payload: &[u8], src_port: u16, dst_port: u16) -> bool {
+    const STUN_HDR_LEN: usize = 20;
+    const STUN_MAGIC_COOKIE: u32 = 0x2112A442;
+    const STUN_BINDING_REQUEST: u16 = 0x0001;
+    const STUN_BINDING_INDICATION: u16 = 0x0011;
+    const STUN_BINDING_SUCCESS: u16 = 0x0101;
+    const STUN_BINDING_ERROR: u16 = 0x0111;
+    const STUN_PORT: u16 = 3478;
+
+    if payload.len() < STUN_HDR_LEN {
+        return false;
+    }
+    let msg_type = u16::from_be_bytes([payload[0], payload[1]]);
+    let known = msg_type == STUN_BINDING_REQUEST
+        || msg_type == STUN_BINDING_INDICATION
+        || msg_type == STUN_BINDING_SUCCESS
+        || msg_type == STUN_BINDING_ERROR;
+    if !known {
+        return false;
+    }
+    let msg_len = u16::from_be_bytes([payload[2], payload[3]]) as usize;
+    if msg_len > payload.len() - STUN_HDR_LEN {
+        return false;
+    }
+    let cookie = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
+    if cookie == STUN_MAGIC_COOKIE {
+        return true;
+    }
+    (src_port == STUN_PORT || dst_port == STUN_PORT) && msg_len <= 256
+}
+
+/// Backward-compatible alias for Binding Request checks in tests.
+pub fn is_stun_binding_request(payload: &[u8], src_port: u16, dst_port: u16) -> bool {
+    if payload.len() < 2 {
+        return false;
+    }
+    let msg_type = u16::from_be_bytes([payload[0], payload[1]]);
+    if msg_type != 0x0001 {
+        return false;
+    }
+    is_stun_binding_message(payload, src_port, dst_port)
+}
+
 /// Detach any XDP program from `interface` via `ip link` (no bpftool required).
 pub fn detach_xdp(interface: &str) -> anyhow::Result<()> {
     const MODES: &[&str] = &["xdp", "xdpgeneric", "xdpdrv", "xdpskb"];
@@ -234,8 +307,7 @@ impl Blacklist {
         ebpf: &mut aya::Ebpf,
         ip: Ipv4Addr,
     ) -> anyhow::Result<Option<&BlacklistEntry>> {
-        let trie: LpmTrie<_, u32, u32> =
-            LpmTrie::try_from(ebpf.map_mut("BLACKLIST").unwrap())?;
+        let trie: LpmTrie<_, u32, u32> = LpmTrie::try_from(ebpf.map_mut("BLACKLIST").unwrap())?;
         let key = Key::new(32, lpm_ip_word(ip));
         let idx = trie.get(&key, 0)?;
         Ok(self.entries.get(idx as usize))
@@ -319,8 +391,7 @@ impl Blacklist {
             }
         }
         {
-            let mut hits: Array<_, u64> =
-                Array::try_from(ebpf.map_mut("BLACKLIST_HITS").unwrap())?;
+            let mut hits: Array<_, u64> = Array::try_from(ebpf.map_mut("BLACKLIST_HITS").unwrap())?;
             for i in 0..self.entries.len() {
                 hits.set(i as u32, 0, 0)?;
             }
@@ -409,7 +480,9 @@ fn parse_cidr(cidr: &str) -> anyhow::Result<(u8, Ipv4Range)> {
     let (addr, prefix) = cidr
         .split_once('/')
         .with_context(|| format!("invalid CIDR {cidr}"))?;
-    let ip: Ipv4Addr = addr.parse().with_context(|| format!("invalid IPv4 in {cidr}"))?;
+    let ip: Ipv4Addr = addr
+        .parse()
+        .with_context(|| format!("invalid IPv4 in {cidr}"))?;
     let prefix: u8 = prefix
         .parse()
         .with_context(|| format!("invalid prefix in {cidr}"))?;
@@ -481,5 +554,33 @@ mod tests {
         ] {
             assert!(bl.is_hit(ip.parse().unwrap()), "missed {ip}");
         }
+    }
+
+    #[test]
+    fn stun_binding_request_rfc5389() {
+        let mut pkt = vec![0u8; 20];
+        pkt[0..2].copy_from_slice(&0x0001u16.to_be_bytes());
+        pkt[2..4].copy_from_slice(&0u16.to_be_bytes());
+        pkt[4..8].copy_from_slice(&0x2112A442u32.to_be_bytes());
+        assert!(is_stun_binding_request(&pkt, 50000, 3478));
+    }
+
+    #[test]
+    fn stun_binding_request_rfc3489() {
+        let mut pkt = vec![0u8; 20];
+        pkt[0..2].copy_from_slice(&0x0001u16.to_be_bytes());
+        pkt[2..4].copy_from_slice(&0u16.to_be_bytes());
+        pkt[4..8].copy_from_slice(&0x01020304u32.to_be_bytes());
+        assert!(is_stun_binding_request(&pkt, 3478, 50000));
+        assert!(!is_stun_binding_request(&pkt, 50000, 50001));
+    }
+
+    #[test]
+    fn stun_binding_success_response_rfc5389() {
+        let mut pkt = vec![0u8; 20];
+        pkt[0..2].copy_from_slice(&0x0101u16.to_be_bytes());
+        pkt[2..4].copy_from_slice(&0u16.to_be_bytes());
+        pkt[4..8].copy_from_slice(&0x2112A442u32.to_be_bytes());
+        assert!(is_stun_binding_message(&pkt, 3478, 50000));
     }
 }

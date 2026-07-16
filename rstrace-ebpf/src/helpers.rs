@@ -1,3 +1,4 @@
+#[inline(always)]
 pub fn comm_matches(filter: &[u8; rstrace_common::MAX_COMM_LEN], comm: &[u8; rstrace_common::MAX_COMM_LEN]) -> bool {
     for (a, b) in filter.iter().zip(comm.iter()) {
         if *a == 0 {

@@ -5,6 +5,11 @@ pub const MAX_SYSCALLS: u32 = 512;
 pub const MAX_PIDS: u32 = 8192;
 pub const MAX_DST_ENTRIES: u32 = 16384;
 pub const MAX_BLACKLIST_RANGES: u32 = 2048;
+pub const MAX_STACK_TRACES: u32 = 1024;
+pub const MAX_STACK_SAMPLES: u32 = 4096;
+pub const MAX_EXEC_COMM_FILTERS: u32 = 32;
+pub const MAX_EXEC_CMD_LEN: usize = 96;
+pub const MAX_EXEC_ARGS_LEN: usize = 192;
 
 pub const AF_INET: u8 = 2;
 pub const AF_INET6: u8 = 10;
@@ -56,6 +61,38 @@ pub struct IpBlacklistConfig {
     pub udp_enabled: u8,
 }
 
+/// Execve event sent via PerfEventArray.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ExecEvent {
+    pub pid: u32,
+    pub _pad: u32,
+    pub comm: [u8; MAX_COMM_LEN],
+    pub cmd: [u8; MAX_EXEC_CMD_LEN],
+    pub args: [u8; MAX_EXEC_ARGS_LEN],
+}
+
+impl Default for ExecEvent {
+    fn default() -> Self {
+        Self {
+            pid: 0,
+            _pad: 0,
+            comm: [0; MAX_COMM_LEN],
+            cmd: [0; MAX_EXEC_CMD_LEN],
+            args: [0; MAX_EXEC_ARGS_LEN],
+        }
+    }
+}
+
+/// Per-stack hit counter plus the process that produced the sample (for symbolization).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct StackCount {
+    pub count: u64,
+    pub pid: u32,
+    pub _pad: u32,
+}
+
 /// IPv4 inclusive range in network byte order (`start <= ip <= end`).
 #[repr(C)]
 #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -78,3 +115,9 @@ unsafe impl aya::Pod for DstLogConfig {}
 
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for IpBlacklistConfig {}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for StackCount {}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for ExecEvent {}

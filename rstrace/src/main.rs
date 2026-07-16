@@ -6,7 +6,11 @@ mod ip_blacklist_test;
 mod netbw_collect;
 mod syscall_collect;
 mod syscall_names;
+mod syscall_stack;
+mod tls_sni_capture;
 mod util;
+mod init;
+mod exec_trace;
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
@@ -40,6 +44,16 @@ enum Commands {
     IpBlacklistDetach(IpBlacklistDetachArgs),
     #[command(name = "ip-blacklist-test")]
     IpBlacklistTest(IpBlacklistTestArgs),
+    /// syscall stack track
+    #[command(name = "syscall-stack")]
+    SyscallStack(SyscallStackArgs),
+    /// Capture outbound TLS ClientHello SNI from TCP traffic via pnet.
+    #[command(name = "tls-sni-capture")]
+    TlsSniCapture(TlsSniCaptureArgs),
+    Init(init::InitArg),
+    /// Trace execve/execveat (requires --filter and/or --comm).
+    #[command(name = "exec-trace")]
+    ExecTrace(exec_trace::ExeTraceArgs),
 }
 
 #[derive(Parser)]
@@ -163,6 +177,10 @@ pub struct IpBlacklistArgs {
     #[arg(short = 'o')]
     output: Option<std::path::PathBuf>,
 
+    /// Overwrite this file with per-IP STUN pass-through counts each interval.
+    #[arg(long)]
+    stun_output: Option<std::path::PathBuf>,
+
     /// Do not drop packets; print matched blacklist IPs to stdout (dstlog-style).
     #[arg(long)]
     dry_run: bool,
@@ -196,7 +214,32 @@ pub struct IpBlacklistTestArgs {
     #[arg(long)]
     stream: bool,
 }
+#[derive(Parser)]
+pub struct SyscallStackArgs {
+    ///指定的系统调用名称，例如clock_gettime，futex,sendmsg
+    syscall: String,
+    ///指定过滤的comm进程
+    #[arg(long)]
+    comm: String,
+    /// 采集间隔
+    #[arg(long, default_value_t = 15)]
+    duration: u64,
+}
 
+#[derive(Parser)]
+pub struct TlsSniCaptureArgs {
+    /// Network interface to sniff (default: all active interfaces).
+    #[arg(long, short = 'i')]
+    interface: Option<String>,
+
+    /// Overwrite this file with per-SNI cumulative counts each interval.
+    #[arg(short = 'o', required = true)]
+    output: std::path::PathBuf,
+
+    /// Interval in seconds between writing stats to -o.
+    #[arg(long, default_value_t = 60)]
+    duration: u64,
+}
 #[derive(Clone, Copy, ValueEnum)]
 pub enum NetBwSortKey {
     Tcp,
@@ -210,11 +253,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::SyscallCollect(a) => a.json,
         Commands::NetBwCollect(a) => a.json,
         Commands::ComputeEffective(a) => a.json,
-        Commands::DstLog(_) => false,
-        Commands::DnsCapture(_) => false,
-        Commands::IpBlacklist(_) => false,
-        Commands::IpBlacklistDetach(_) => false,
         Commands::IpBlacklistTest(a) => a.json,
+        _=>false,
     };
     util::init_logging(json);
 
@@ -230,6 +270,10 @@ async fn main() -> anyhow::Result<()> {
             println!("XDP detached from {}", args.interface);
         }
         Commands::IpBlacklistTest(args) => ip_blacklist_test::run(args)?,
+        Commands::SyscallStack(args) => syscall_stack::run(args).await?,
+        Commands::TlsSniCapture(args) => tls_sni_capture::run(args).await?,
+        Commands::Init(init_arg) => init::run_init(init_arg).await?,
+        Commands::ExecTrace(args) => exec_trace::run(args).await?,
     }
 
     Ok(())

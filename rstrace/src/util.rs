@@ -6,6 +6,7 @@ use rstrace_common::{CommFilter, MAX_COMM_LEN};
 use aya::Ebpf;
 
 pub fn load_ebpf() -> anyhow::Result<Ebpf> {
+    ensure_memlock()?;
     Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
         "/rstrace"
@@ -14,7 +15,7 @@ pub fn load_ebpf() -> anyhow::Result<Ebpf> {
 }
 
 pub fn load_ebpf_xdp() -> anyhow::Result<Ebpf> {
-    raise_memlock_limit()?;
+    ensure_memlock()?;
     Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
         "/rstrace-xdp"
@@ -22,7 +23,7 @@ pub fn load_ebpf_xdp() -> anyhow::Result<Ebpf> {
     .map_err(Into::into)
 }
 
-fn raise_memlock_limit() -> anyhow::Result<()> {
+fn ensure_memlock() -> anyhow::Result<()> {
     let target = libc::rlimit {
         rlim_cur: libc::RLIM_INFINITY,
         rlim_max: libc::RLIM_INFINITY,

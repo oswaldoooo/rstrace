@@ -2,9 +2,11 @@
 #![no_main]
 
 mod dstlog;
+mod exec_trace;
 mod helpers;
 mod netbw;
 mod syscall;
+mod syscall_stack;
 
 #[cfg(not(test))]
 #[panic_handler]
